@@ -71,7 +71,7 @@ class TranslationRefinementAgent(BaseAgent):
             with cache_project.stats_data.atomic_scope():
                 # 🔥 更新已消耗时间（确保阶段更新时也同步时间）
                 cache_project.stats_data.time = time.time() - cache_project.stats_data.start_time
-                update_data = cache_project.stats_data.to_dict()
+            update_data = cache_project.stats_data.to_dict()
         else:
             update_data = {}
         
@@ -2088,7 +2088,7 @@ class TranslationRefinementAgent(BaseAgent):
                 except:
                     pass
         return results
-
+    
     def _batch_back_translate(self, translated_texts: List[str], terminology_db: Dict) -> Optional[List[str]]:
         """
         批量回译（使用textarea格式）
