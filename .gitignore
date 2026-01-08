@@ -1,0 +1,23 @@
+*__pycache__
+
+/*导出*
+/*词典*
+/*实体*
+/*工具集*
+/*debug*
+/*input*
+/*output*
+/Resource/config.json
+.venv
+dist/
+build/
+AiNiee.build/
+AiNiee.dist/
+
+PluginScripts/IOPlugins/*
+!PluginScripts/IOPlugins/CustomRegistry.py
+
+# IDE配置
+.idea/
+# 构建文件
+*.spec

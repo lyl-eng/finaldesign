@@ -1,0 +1,59 @@
+{
+  "PART_1": {
+    "多智能体工作流": {
+      "简中": "多智能体工作流",
+      "繁中": "多智能體工作流",
+      "English": "Multi-Agent Workflow",
+      "日本語": "マルチエージェントワークフロー"
+    },
+    "规划Agent": {
+      "简中": "规划Agent",
+      "繁中": "規劃Agent",
+      "English": "Planning Agent",
+      "日本語": "プランニングAgent"
+    },
+    "预处理Agent": {
+      "简中": "预处理Agent",
+      "繁中": "預處理Agent",
+      "English": "Preprocessing Agent",
+      "日本語": "前処理Agent"
+    },
+    "术语Agent": {
+      "简中": "术语Agent",
+      "繁中": "術語Agent",
+      "English": "Terminology Agent",
+      "日本語": "用語Agent"
+    },
+    "翻译Agent": {
+      "简中": "翻译Agent",
+      "繁中": "翻譯Agent",
+      "English": "Translation Agent",
+      "日本語": "翻訳Agent"
+    },
+    "任务分析与规划": {
+      "简中": "任务分析与规划",
+      "繁中": "任務分析與規劃",
+      "English": "Task Analysis & Planning",
+      "日本語": "タスク分析と計画"
+    },
+    "文本预处理与结构化": {
+      "简中": "文本预处理与结构化",
+      "繁中": "文本預處理與結構化",
+      "English": "Text Preprocessing & Structuring",
+      "日本語": "テキスト前処理と構造化"
+    },
+    "术语与实体识别": {
+      "简中": "术语与实体识别",
+      "繁中": "術語與實體識別",
+      "English": "Terminology & Entity Recognition",
+      "日本語": "用語とエンティティの認識"
+    },
+    "多步骤翻译与优化": {
+      "简中": "多步骤翻译与优化",
+      "繁中": "多步驟翻譯與優化",
+      "English": "Multi-Step Translation & Refinement",
+      "日本語": "多段階翻訳と最適化"
+    }
+  }
+}
+
