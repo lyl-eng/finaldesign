@@ -26,14 +26,33 @@ for module_name in MODULES_TO_EXCLUDE:
     print(f"[INFO] Explicitly excluding module: {module_name}")
 
 if os.path.exists("./requirements.txt"):
+    import re
+    
+    def get_package_name(line):
+        # 移除注释
+        line = line.split('#')[0].strip()
+        if not line:
+            return None
+        # 移除 extras (例如 [all])
+        line = re.sub(r'\[.*?\]', '', line)
+        # 移除版本号 (例如 >=0.20.0, ==1.0.0)
+        # 匹配常见的版本操作符: ==, >=, <=, >, <, ~=, !=
+        line = re.split(r'(==|>=|<=|>|<|~=|!=)', line)[0]
+        return line.strip()
+
     with open("./requirements.txt", "r", encoding="utf-8") as reader:
         for line in reader:
-            if "#" not in line:
-                cmd.append("--hidden-import=" + line.strip())
+            pkg_name = get_package_name(line)
+            if pkg_name:
+                cmd.append("--hidden-import=" + pkg_name)
 
     with open("./requirements_no_deps.txt", "r", encoding="utf-8") as reader:
         for line in reader:
-            if "#" not in line:
-                cmd.append("--hidden-import=" + line.strip())
+            pkg_name = get_package_name(line)
+            if pkg_name:
+                cmd.append("--hidden-import=" + pkg_name)
 
+    # Griptape 需要收集所有子模块和数据
+    cmd.append("--collect-all=griptape")
+    
     PyInstaller.__main__.run(cmd)
