@@ -62,7 +62,7 @@ class PreprocessingTool(BaseTool, Base):
             with cache_project.stats_data.atomic_scope():
                 # 🔥 更新已消耗时间（确保阶段更新时也同步时间）
                 cache_project.stats_data.time = time.time() - cache_project.stats_data.start_time
-                update_data = cache_project.stats_data.to_dict()
+            update_data = cache_project.stats_data.to_dict()
         else:
             update_data = {}
         
@@ -117,6 +117,80 @@ class PreprocessingTool(BaseTool, Base):
             
             result = self.preprocessing_agent.execute({"cache_project": cache_project})
             
+            # ==========================================
+            # DB Phase 1.5: 保存处理原子
+            # ==========================================
+            try:
+                # 检查是否已注入 DB 信息
+                if hasattr(cache_project, 'db_work_id') and hasattr(cache_project, 'db_doc_map'):
+                    from ModuleFolders.Cache.DatabaseManager import DatabaseManager
+                    db_manager = DatabaseManager()
+                    
+                    self.info("[DB] 开始同步处理原子...")
+                    
+                    # 建立 row_index -> atom_id 的全局映射
+                    # 结构: { file_path: { row_index: atom_id } }
+                    if not hasattr(cache_project, 'db_atom_map'):
+                        cache_project.db_atom_map = {}
+                    
+                    # 遍历文件字典
+                    for file_path, cache_file in cache_project.files.items():
+                        items = cache_file.items
+                        
+                        doc_id = cache_project.db_doc_map.get(file_path)
+                        if not doc_id:
+                            continue
+                        
+                        # 构建原子数据列表（包含上下文信息和摘要）
+                        atoms_data = []
+                        for idx, item in enumerate(items):
+                            # 构建完整上下文信息
+                            context_info = {
+                                "prev_source": items[idx-1].source_text if idx > 0 else None,
+                                "prev_translated": None,  # 翻译完成后填充
+                                "next_source": items[idx+1].source_text if idx < len(items)-1 else None,
+                                "terminology": [],  # 术语识别后填充
+                                "memory_refs": [],  # 翻译记忆检索后填充
+                                "similar_atoms": []  # 相似历史翻译
+                            }
+                            
+                            # 生成简单摘要（取前100字符）
+                            summary = item.source_text[:100] + "..." if len(item.source_text) > 100 else item.source_text
+                            
+                            atoms_data.append({
+                                "source_text": item.source_text,
+                                "position": idx,
+                                "summary": summary,
+                                "context_info": context_info
+                            })
+                        
+                        # 批量创建原子
+                        atom_ids = db_manager.create_atoms_batch(doc_id, atoms_data)
+                        
+                        # 更新文档的原子总数
+                        db_manager.update_document_atom_count(doc_id, len(atom_ids))
+                        
+                        # 建立映射
+                        if len(atom_ids) == len(items):
+                            file_atom_map = {}
+                            for item, a_id in zip(items, atom_ids):
+                                file_atom_map[item.row_index] = a_id
+                                # 把 atom_id 塞回 item (运行时属性)
+                                item.db_atom_id = a_id
+                            
+                            cache_project.db_atom_map[file_path] = file_atom_map
+                            self.info(f"[DB] 文件 {file_path} 同步完成: {len(atom_ids)} 个原子")
+                        else:
+                            self.error(f"[DB] 原子数量不匹配! Items: {len(items)}, IDs: {len(atom_ids)}")
+                    
+                    # 持久化 atom_map 到 extra (支持断点续传)
+                    if not hasattr(cache_project, 'extra') or not isinstance(cache_project.extra, dict):
+                        cache_project.extra = {}
+                    cache_project.extra['db_atom_map'] = cache_project.db_atom_map
+                            
+            except Exception as e:
+                self.error(f"[DB] 原子同步失败: {e}")
+
             # 🔥 发送UI阶段更新：完成（包含统计数据）
             self._publish_stage_with_stats(cache_project, "preprocessing", "完成")
 
@@ -180,7 +254,7 @@ class TerminologyTool(BaseTool, Base):
             with cache_project.stats_data.atomic_scope():
                 # 🔥 更新已消耗时间（确保阶段更新时也同步时间）
                 cache_project.stats_data.time = time.time() - cache_project.stats_data.start_time
-                update_data = cache_project.stats_data.to_dict()
+            update_data = cache_project.stats_data.to_dict()
         else:
             update_data = {}
         

@@ -312,7 +312,7 @@ class MonitoringPage(Base,QWidget):
             self.debug(f"[MonitoringPage] 无法计算预估时间：缺少total_lines数据")
             self._warned_no_progress = True
         return 0
-    
+
     # 更新行数
     def update_line(self, event: int, data: dict) -> None:
         if data.get("line", None) is not None and data.get("total_line", None) is not None:

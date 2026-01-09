@@ -229,7 +229,7 @@ class WorkflowManager(Base):
             with cache_project.stats_data.atomic_scope():
                 # 🔥 更新已消耗时间（确保阶段更新时也同步时间）
                 cache_project.stats_data.time = time.time() - cache_project.stats_data.start_time
-                update_data = cache_project.stats_data.to_dict()
+            update_data = cache_project.stats_data.to_dict()
         else:
             update_data = {}
         

@@ -103,6 +103,10 @@ class MultiAgentTaskExecutor(Base):
         # 初始化工作流管理器
         self.workflow_manager = WorkflowManager(self.config)
         
+        # 0. 初始化数据库管理器
+        from ModuleFolders.Cache.DatabaseManager import DatabaseManager
+        self.db_manager = DatabaseManager()
+        
         # 加载缓存项目
         if not hasattr(self.cache_manager, "project") or not self.cache_manager.project:
             self.error("未找到缓存项目，请先加载文件")
@@ -150,6 +154,87 @@ class MultiAgentTaskExecutor(Base):
         project_status_data.line = 0
         project_status_data.start_time = time.time()
         
+        # ==========================================
+        # DB Phase 1: 项目与文档初始化 (支持ID持久化复用)
+        # ==========================================
+        try:
+            work_id = None
+            source_lang = getattr(self.config, 'source_language', 'unknown')
+            target_lang = getattr(self.config, 'target_language', 'unknown')
+            work_name = f"{source_lang}2{target_lang}_{int(time.time())}"
+            
+            # 1. 检查是否已有 work_id (断点续传)
+            if hasattr(cache_project, 'extra') and cache_project.extra.get('db_work_id'):
+                work_id = cache_project.extra.get('db_work_id')
+                self.info(f"[DB] 检测到已有项目 ID: {work_id}，复用之")
+                
+                # 即使复用，也要注入运行时属性
+                cache_project.db_work_id = work_id
+                
+                # 尝试恢复 doc_map (如果extra里存了)
+                if cache_project.extra.get('db_doc_map'):
+                    cache_project.db_doc_map = cache_project.extra.get('db_doc_map')
+                else:
+                    cache_project.db_doc_map = {}
+                    
+                # 尝试恢复 atom_map (注意：JSON key是字符串，需要转为int)
+                if cache_project.extra.get('db_atom_map'):
+                    raw_atom_map = cache_project.extra.get('db_atom_map')
+                    cache_project.db_atom_map = {}
+                    try:
+                        for f_path, f_map in raw_atom_map.items():
+                            # 将 key 从字符串转回整数 (row_index)
+                            cache_project.db_atom_map[f_path] = {int(k): v for k, v in f_map.items()}
+                        self.info(f"[DB] 已恢复 Atom Map，共 {len(cache_project.db_atom_map)} 个文件")
+                    except Exception as e:
+                        self.error(f"[DB] Atom Map 恢复失败: {e}")
+                        cache_project.db_atom_map = {}
+                else:
+                    cache_project.db_atom_map = {}
+            else:
+                # 2. 创建新项目
+                work_id = self.db_manager.create_project_work(
+                    name=work_name,
+                    src_lang=source_lang,
+                    tgt_lang=target_lang,
+                    workflow_config=self.config.to_dict() if hasattr(self.config, 'to_dict') else {}
+                )
+                
+                if work_id:
+                    self.info(f"[DB] 项目已创建: work_id={work_id}")
+                    # 持久化 ID 到 extra (下次加载时会用到)
+                    if not hasattr(cache_project, 'extra'):
+                        cache_project.extra = {}
+                    cache_project.extra['db_work_id'] = work_id
+                    
+                    # 注入运行时属性
+                    cache_project.db_work_id = work_id
+                    cache_project.db_doc_map = {}
+            
+            # 3. 注册文档 (增量更新)
+            if work_id:
+                for file_path in cache_project.files:
+                    # 如果文档已经注册过，跳过
+                    if file_path in cache_project.db_doc_map:
+                        continue
+                        
+                    doc_id = self.db_manager.create_source_doc(
+                        work_id=work_id,
+                        file_path=file_path,
+                        doc_meta={"original_path": file_path}
+                    )
+                    if doc_id:
+                        cache_project.db_doc_map[file_path] = doc_id
+                        self.info(f"[DB] 文档已注册: {file_path} -> doc_id={doc_id}")
+                
+                # 持久化 doc_map
+                cache_project.extra['db_doc_map'] = cache_project.db_doc_map
+            else:
+                self.error("[DB] 项目ID无效，后续DB操作将跳过")
+                
+        except Exception as e:
+            self.error(f"[DB] 初始化异常: {e}")
+        
         # 发送初始进度事件
         self.emit(Base.EVENT.TASK_UPDATE, project_status_data.to_dict())
         
@@ -190,7 +275,7 @@ class MultiAgentTaskExecutor(Base):
             人工介入回调
             确保在GUI线程中阻塞执行
             """
-            from PyQt5.QtCore import QObject, pyqtSignal, Qt, QEventLoop
+            from PyQt5.QtCore import QObject, pyqtSignal, Qt
             from PyQt5.QtWidgets import QApplication
             from ModuleFolders.MultiAgent.HumanCollaborationNode import HumanCollaborationNode
             import threading
@@ -198,7 +283,7 @@ class MultiAgentTaskExecutor(Base):
             # 结果容器
             result_container = {"data": None}
             
-            # 定义一个专门的信号发射器类（必须在方法内定义或外部定义）
+            # 定义一个专门的信号发射器类
             class Invoker(QObject):
                 # 信号携带参数：task_type, task_data
                 invoke_signal = pyqtSignal(str, dict)
@@ -236,19 +321,22 @@ class MultiAgentTaskExecutor(Base):
                 return result_container["data"]
             
             # 在工作线程：使用 BlockingQueuedConnection
-            # 1. 创建Invoker并移动到主线程
-            invoker = Invoker()
-            invoker.moveToThread(app.thread())
-            
-            # 2. 连接信号到槽
-            invoker.invoke_signal.connect(invoker.run, Qt.BlockingQueuedConnection)
-            
-            # 3. 发射信号（这将阻塞直到槽函数返回）
-            # 注意：发射信号的线程和槽所在的线程不同，且使用了BlockingQueuedConnection
-            invoker.invoke_signal.emit(task_type, task_data)
-            
-            return result_container["data"]
-        
+            try:
+                # 1. 创建Invoker并移动到主线程
+                invoker = Invoker()
+                invoker.moveToThread(app.thread())
+                
+                # 2. 连接信号到槽
+                invoker.invoke_signal.connect(invoker.run, Qt.BlockingQueuedConnection)
+                
+                # 3. 发射信号（这将阻塞直到槽函数返回）
+                invoker.invoke_signal.emit(task_type, task_data)
+                
+                return result_container["data"]
+            except Exception as e:
+                self.error(f"UI回调异常: {e}")
+                return None
+
         try:
             # 执行工作流
             workflow_result = self.workflow_manager.execute_workflow(

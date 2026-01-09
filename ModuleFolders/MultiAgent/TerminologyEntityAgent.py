@@ -324,7 +324,7 @@ class TerminologyEntityAgent(BaseAgent):
                         chunk_terms = future.result()
                         all_terms.extend(chunk_terms)
                     except Exception as e:
-                        self.error(f"第 {chunk_idx} 批术语识别失败: {e}")
+                        self.error(f"第 {chunk_idx} 批术语识别失败: {e}", e)
         
         # 去重（基于术语名称）
         unique_terms = {}
@@ -424,7 +424,7 @@ class TerminologyEntityAgent(BaseAgent):
                 except json.JSONDecodeError:
                     self.warning(f"第 {chunk_idx} 批LLM返回的JSON格式不正确")
         except Exception as e:
-            self.error(f"第 {chunk_idx} 批LLM术语识别失败: {e}")
+            self.error(f"第 {chunk_idx} 批LLM术语识别失败: {e}", e)
         
         return []
     
@@ -632,7 +632,7 @@ class TerminologyEntityAgent(BaseAgent):
                     self.warning("ResponseExtractor未能解析出翻译结果")
                     
         except Exception as e:
-            self.error(f"批量术语查证失败: {e}")
+            self.error(f"批量术语查证失败: {e}", e)
         
         # 如果批量查证失败，返回原始信息
         return terms_list
@@ -676,7 +676,7 @@ class TerminologyEntityAgent(BaseAgent):
                 term_info["llm_verification"] = response_content
                 term_info["translation_suggestions"] = self._extract_translation_suggestions(response_content)
         except Exception as e:
-            self.debug(f"术语查证失败 {term}: {e}")
+            self.error(f"术语查证失败 {term}: {e}", e)
         
         return term_info
     
@@ -711,9 +711,11 @@ class TerminologyEntityAgent(BaseAgent):
     def _build_terminology_database(self, verified_terminology: List[Dict]) -> None:
         """
         构建项目专属术语库（结构化资源）
+        并将术语同步到 ElasticSearch (Phase 2)
         """
-        self.log_agent_action("构建项目专属术语库")
+        self.log_agent_action("构建项目专属术语库并同步到DB")
         
+        # 1. 内存更新
         for term_info in verified_terminology:
             term = term_info.get("term")
             if not term:
@@ -731,6 +733,68 @@ class TerminologyEntityAgent(BaseAgent):
                 "priority": term_info.get("priority", "medium"),
                 "verified": True
             }
+
+        # 2. 数据库同步 (ES) - 写入完整词汇信息
+        try:
+            from ModuleFolders.Cache.DatabaseManager import DatabaseManager
+            db_manager = DatabaseManager()
+            
+            # 获取当前 work_id (默认 0)
+            work_id = getattr(self._current_cache_project, 'db_work_id', 0)
+            
+            # 批量写入术语到 ES（包含完整词汇信息）
+            for term, info in self.terminology_db.items():
+                # 确定词汇类型
+                term_type = info.get("type", "term")
+                word_type_map = {
+                    "named_entity": "entity",
+                    "terminology": "term",
+                    "cultural_expression": "idiom",
+                    "unknown": "term"
+                }
+                word_type = word_type_map.get(term_type, "term")
+                
+                # 构建候选译法列表
+                translations_list = []
+                main_translation = info.get("translation", "")
+                if main_translation:
+                    translations_list.append({
+                        "translation": main_translation,
+                        "source": "LLM",
+                        "confidence": info.get("confidence", 1.0),
+                        "rank": 1,
+                        "rationale": info.get("translation_strategy", "")
+                    })
+                
+                # 收集相关原子ID（如果有的话）
+                atom_ids = []
+                if hasattr(self._current_cache_project, 'db_atom_map'):
+                    # 遍历所有文件的 atom_map，找出包含这个术语的原子
+                    for file_path, atom_map in self._current_cache_project.db_atom_map.items():
+                        for row_idx, a_id in atom_map.items():
+                            atom_ids.append(a_id)
+                    # 限制数量避免过大
+                    atom_ids = atom_ids[:10] if len(atom_ids) > 10 else atom_ids
+                
+                db_manager.upsert_term(
+                    entry_key=term,
+                    entry_val=main_translation,
+                    work_id=work_id,
+                    word_type=word_type,
+                    domain=self.memory_storage.get("domain", "general"),
+                    variants=[],  # TODO: 还没提取变体
+                    example_sentences=[info.get("context", "")] if info.get("context") else [],
+                    translations=translations_list,
+                    atom_ids=atom_ids,
+                    confidence=info.get("confidence", 1.0),
+                    agent_notes=f"类型: {info.get('category', '')}, 含义: {info.get('meaning', '')}",
+                    is_confirmed=info.get("verified", False)
+                )
+            
+            self.info(f"[DB] 术语已同步到 ElasticSearch: {len(self.terminology_db)} 个条目 (Project ID: {work_id})")
+            
+        except Exception as e:
+            self.error(f"[DB] 术语库同步失败: {e}")
     
     def _update_memory(self, cache_project: CacheProject, metadata: Dict) -> None:
         """

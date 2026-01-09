@@ -69,3 +69,12 @@ class CacheItem(ThreadSafeCache, ExtraMixin):
 
     def _extra(self) -> dict[str, Any]:
         return self.extra
+
+    @property
+    def row_index(self) -> int:
+        """
+        获取行索引。
+        优先从 extra 字典中获取 row_index，如果不存在则返回 text_index。
+        这是为了兼容数据库代码对 row_index 的访问。
+        """
+        return self.get_extra("row_index", self.text_index)

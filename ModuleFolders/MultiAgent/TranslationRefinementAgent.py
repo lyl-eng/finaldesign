@@ -37,11 +37,26 @@ class TranslationRefinementAgent(BaseAgent):
         self.request_limiter = RequestLimiter()  # 添加请求限制器
         self._current_cache_project = None  # 当前处理的cache_project
         
+        # 初始化 DB Manager
+        try:
+            from ModuleFolders.Cache.DatabaseManager import DatabaseManager
+            self.db_manager = DatabaseManager()
+        except ImportError:
+            self.db_manager = None
+
         # 配置请求限制器
         if self.config:
             rpm_limit = getattr(self.config, 'rpm_limit', 60)
             tpm_limit = getattr(self.config, 'tpm_limit', 10000)
             self.request_limiter.set_limit(tpm_limit, rpm_limit)
+    
+    def _get_atom_id(self, cache_project, file_path, row_index) -> Optional[int]:
+        """[DB] 获取缓存项对应的数据库原子ID"""
+        if hasattr(cache_project, 'db_atom_map'):
+            file_map = cache_project.db_atom_map.get(file_path)
+            if file_map:
+                return file_map.get(row_index)
+        return None
     
     def _update_stage_progress(self, cache_project: CacheProject, stage: str, current: int, total: int):
         """更新当前阶段的进度信息（用于预估时间）"""
@@ -554,6 +569,47 @@ class TranslationRefinementAgent(BaseAgent):
             self.info(f"  ✓ 回译验证完成: {len(verified_texts)} 行")
             translated_texts = verified_texts
             
+            # [DB] Phase 3: 记录评估轨迹 (Evaluate Trace) + 更新 examination 字段
+            if self.db_manager and self._current_cache_project:
+                try:
+                    for idx, (score, back_trans) in enumerate(zip(quality_scores, back_translations)):
+                        if idx < len(chunk):
+                            item = chunk[idx]
+                            atom_id = self._get_atom_id(self._current_cache_project, file_path, item.row_index)
+                            if atom_id:
+                                # 确定警告级别
+                                if score >= 8.0:
+                                    warning_level = "low"
+                                elif score >= 6.0:
+                                    warning_level = "medium"
+                                else:
+                                    warning_level = "high"
+                                
+                                # 记录评估轨迹
+                                self.db_manager.add_trace(
+                                    atom_id=atom_id,
+                                    agent_role="QualityAssessor",
+                                    action_type="evaluate",
+                                    content=f"Quality Score: {score}",
+                                    quality_report={
+                                        "score": score,
+                                        "back_translation": back_trans,
+                                        "status": "pass" if score >= 8.0 else "needs_refinement"
+                                    }
+                                )
+                                
+                                # 更新原子的 examination 字段（质量检查信息）
+                                examination = {
+                                    "back_translation": back_trans,
+                                    "warning_level": warning_level,
+                                    "semantic_similarity": score / 10.0,  # 转换为0-1范围
+                                    "issues": [] if score >= 8.0 else ["需要润色"],
+                                    "algorithm": "backtranslation"
+                                }
+                                self.db_manager.update_atom_examination(atom_id, examination)
+                except Exception as e:
+                    self.error(f"[DB] 记录评估轨迹失败: {e}")
+
             # 更新缓存
             translated_items = []
             for item, translated_text in zip(chunk, translated_texts):
@@ -564,6 +620,24 @@ class TranslationRefinementAgent(BaseAgent):
                         "translated": translated_text,
                         "status": "success"
                     })
+
+                    # [DB] Phase 3: 记录初翻轨迹 (Draft Trace)
+                    if self.db_manager and self._current_cache_project:
+                        atom_id = self._get_atom_id(self._current_cache_project, file_path, item.row_index)
+                        if atom_id:
+                            self.db_manager.add_trace(
+                                atom_id=atom_id,
+                                agent_role="Translator",
+                                action_type="draft",
+                                content=translated_text,
+                                meta_data={"strategy": strategy}
+                            )
+                            # 同时更新原子的翻译结果
+                            self.db_manager.update_atom_translation(
+                                atom_id=atom_id,
+                                translated_text=translated_text,
+                                status_code=1  # 已初翻
+                            )
             
             # 🔥 更新行数统计（每完成一个chunk就更新）
             self._update_line_stats(chunk_size)
@@ -579,7 +653,8 @@ class TranslationRefinementAgent(BaseAgent):
                 "translated_texts": translated_texts,  # 🔥 返回译文
                 "quality_scores": quality_scores,  # 🔥 返回评分
                 "back_translations": back_translations,  # 🔥 返回回译
-                "chunk_items": chunk  # 🔥 返回CacheItem用于后续更新
+                "chunk_items": chunk,  # 🔥 返回CacheItem用于后续更新
+                "file_path": file_path # 🔥 记录文件路径
             }
                 
         except Exception as e:
@@ -800,7 +875,7 @@ class TranslationRefinementAgent(BaseAgent):
                 return None
                 
         except Exception as e:
-            self.error(f"  ✗ 批量翻译失败: {e}")
+            self.error(f"  ✗ 批量翻译失败: {e}", e)
             return None
     
     def _multi_step_translation(self, unit: Dict, terminology_db: Dict, memory_storage: Dict) -> Optional[str]:
@@ -871,7 +946,7 @@ class TranslationRefinementAgent(BaseAgent):
                 self.info(f"  ✓ 初步译文: {translated[:100]}{'...' if len(translated) > 100 else ''}")
                 return translated
         except Exception as e:
-            self.error(f"多步骤翻译失败: {e}")
+            self.error(f"多步骤翻译失败: {e}", e)
         
         return None
     
@@ -1660,8 +1735,17 @@ class TranslationRefinementAgent(BaseAgent):
             translated_texts = chunk_data.get("translated_texts", [])
             quality_scores = chunk_data.get("quality_scores", [])
             back_translations = chunk_data.get("back_translations", [])
+            chunk_items = chunk_data.get("chunk_items", []) # 获取原始CacheItem列表
+            
+            file_path = chunk_data.get("file_path", "") # 🔥 从 chunk_data 获取 file_path
             
             for local_idx, (src, trans, score, back) in enumerate(zip(source_texts, translated_texts, quality_scores, back_translations)):
+                # 获取对应的CacheItem信息
+                row_index = -1
+                if local_idx < len(chunk_items):
+                    # file_path = chunk_items[local_idx].file_path # CacheItem 没有 file_path
+                    row_index = chunk_items[local_idx].row_index
+
                 all_scores_with_index.append({
                     "global_index": global_index,
                     "chunk_idx": chunk_idx,
@@ -1669,7 +1753,9 @@ class TranslationRefinementAgent(BaseAgent):
                     "score": score,
                     "source_text": src,
                     "translated_text": trans,
-                    "back_translation": back
+                    "back_translation": back,
+                    "file_path": file_path,
+                    "row_index": row_index
                 })
                 global_index += 1
         
@@ -1696,7 +1782,9 @@ class TranslationRefinementAgent(BaseAgent):
                 "back_translation": item["back_translation"],
                 "score": item["score"],
                 "context_before": context_before,
-                "context_after": context_after
+                "context_after": context_after,
+                "file_path": item.get("file_path"),
+                "row_index": item.get("row_index")
             })
             self.info(f"      全局行{global_idx+1}: 评分 {item['score']:.1f}/10（最低3个之一）")
         
@@ -1741,6 +1829,24 @@ class TranslationRefinementAgent(BaseAgent):
                     chunk_data["translated_texts"][local_idx] = custom_translation
                     self.info(f"      全局行{global_idx+1}: 使用用户自定义翻译 ✏️")
                     
+                    # [DB] 记录人工修改 (Human Edit Trace)
+                    if self.db_manager and self._current_cache_project:
+                        atom_id = self._get_atom_id(self._current_cache_project, target_item["file_path"], target_item["row_index"])
+                        if atom_id:
+                            self.db_manager.add_trace(
+                                atom_id=atom_id,
+                                agent_role="Human",
+                                action_type="human_edit",
+                                content=custom_translation,
+                                meta_data={"note": "User custom translation in review dialog"}
+                            )
+                            # 更新原子翻译结果
+                            self.db_manager.update_atom_translation(
+                                atom_id=atom_id,
+                                translated_text=custom_translation,
+                                status_code=3  # 已人工审核
+                            )
+                    
                 elif action == "retranslate":
                     # 需要LLM重新翻译
                     self.info(f"      全局行{global_idx+1}: 标记为需要重新翻译 🔄")
@@ -1752,6 +1858,24 @@ class TranslationRefinementAgent(BaseAgent):
                     if new_translation:
                         chunk_data["translated_texts"][local_idx] = new_translation
                         self.info(f"      全局行{global_idx+1}: 重新翻译完成")
+                        
+                        # [DB] 记录重新翻译 (Refine Trace)
+                        if self.db_manager and self._current_cache_project:
+                            atom_id = self._get_atom_id(self._current_cache_project, target_item["file_path"], target_item["row_index"])
+                            if atom_id:
+                                self.db_manager.add_trace(
+                                    atom_id=atom_id,
+                                    agent_role="Translator",
+                                    action_type="refine",
+                                    content=new_translation,
+                                    meta_data={"reason": "User requested retranslation"}
+                                )
+                                # 更新原子翻译结果
+                                self.db_manager.update_atom_translation(
+                                    atom_id=atom_id,
+                                    translated_text=new_translation,
+                                    status_code=2  # 已润色
+                                )
                     else:
                         self.warning(f"      全局行{global_idx+1}: 重新翻译失败，保留原译文")
         else:
@@ -1786,6 +1910,32 @@ class TranslationRefinementAgent(BaseAgent):
             checked_texts = self._check_entity_consistency(
                 source_texts, translated_texts, terminology_db, entity_database
             )
+            
+            # [DB] Phase 3: 记录最终一致性检查轨迹 (Final Trace)
+            # 仅记录被实体检查修改过的行
+            if self.db_manager and self._current_cache_project:
+                chunk_items = chunk_data.get("chunk_items", [])
+                file_path = chunk_data.get("file_path", "")
+                
+                for idx, (old_text, new_text) in enumerate(zip(translated_texts, checked_texts)):
+                    if old_text != new_text and idx < len(chunk_items):
+                        item = chunk_items[idx]
+                        atom_id = self._get_atom_id(self._current_cache_project, file_path, item.row_index)
+                        if atom_id:
+                            self.db_manager.add_trace(
+                                atom_id=atom_id,
+                                agent_role="ConsistencyChecker",
+                                action_type="final",
+                                content=new_text,
+                                meta_data={"reason": "Entity consistency check", "before": old_text}
+                            )
+                            # 更新原子为最终译文
+                            self.db_manager.update_atom_translation(
+                                atom_id=atom_id,
+                                translated_text=new_text,
+                                status_code=4  # 已完成
+                            )
+
             chunk_data["translated_texts"] = checked_texts
         
         # 完成一致性检查
@@ -2469,7 +2619,7 @@ class TranslationRefinementAgent(BaseAgent):
                     
                     return refined_texts
         except Exception as e:
-            self.debug(f"批量修正失败: {e}")
+            self.error(f"批量修正失败: {e}", e)
         
         return None
     

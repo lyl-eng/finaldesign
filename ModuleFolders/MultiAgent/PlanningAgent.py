@@ -33,62 +33,60 @@ class PlanningAgent(BaseAgent):
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         执行规划任务
-        
-        Args:
-            input_data: 包含cache_project等的字典
-            
-        Returns:
-            包含执行计划的字典
         """
-        self.log_agent_action("开始执行任务规划")
-        
-        cache_project: CacheProject = input_data.get("cache_project")
-        if not cache_project:
-            self.error("未找到cache_project数据")
-            return {"success": False, "error": "缺少cache_project"}
-        
-        # 1. 分析任务复杂度
-        task_analysis = self._analyze_task_complexity(cache_project)
-        self.info(f"任务分析完成: {task_analysis}")
-        
-        # 2. 细粒度分析文本块 - 为每个chunk打上策略标签
-        self.info("正在进行文本块细粒度分析...")
-        chunk_strategies = self._analyze_chunks_and_assign_strategies(cache_project)
-        self.info(f"文本块分析完成: {len(chunk_strategies)} 个批次已分配策略")
-        
-        # 3. 制定执行计划
-        execution_plan = self._create_execution_plan(task_analysis)
-        self.info(f"执行计划: {execution_plan}")
-        
-        # 4. 评估资源需求
-        resource_plan = self._estimate_resources(task_analysis, chunk_strategies)
-        self.info(f"资源评估: {resource_plan}")
-        
-        # 5. 确定工作流配置
-        workflow_config = self._configure_workflow(execution_plan, resource_plan)
-        self.info(f"工作流配置: {workflow_config}")
-        
-        # 6. 构建Task Memory（任务元数据）
-        task_memory = {
-            "chunk_strategies": chunk_strategies,  # 每个chunk的翻译策略
-            "terminology_database": {},  # 将由TerminologyAgent填充
-            "style_guide": self._determine_style_guide(cache_project),  # 文体风格指南
-            "entity_database": {},  # 实体数据库（用于一致性检查）
-        }
-        
-        self.log_agent_action("任务规划完成", 
-                             f"预计处理 {task_analysis['total_units']} 个单元，"
-                             f"已为 {len(chunk_strategies)} 个批次分配翻译策略")
-        
-        return {
-            "success": True,
-            "cache_project": cache_project,
-            "task_analysis": task_analysis,
-            "execution_plan": execution_plan,
-            "resource_plan": resource_plan,
-            "workflow_config": workflow_config,
-            "task_memory": task_memory,  # 新增：任务元数据
-        }
+        try:
+            self.log_agent_action("开始执行任务规划")
+            
+            cache_project: CacheProject = input_data.get("cache_project")
+            if not cache_project:
+                self.error("未找到cache_project数据")
+                return {"success": False, "error": "缺少cache_project"}
+            
+            # 1. 分析任务复杂度
+            task_analysis = self._analyze_task_complexity(cache_project)
+            self.info(f"任务分析完成: {task_analysis}")
+            
+            # 2. 细粒度分析文本块 - 为每个chunk打上策略标签
+            self.info("正在进行文本块细粒度分析...")
+            chunk_strategies = self._analyze_chunks_and_assign_strategies(cache_project)
+            self.info(f"文本块分析完成: {len(chunk_strategies)} 个批次已分配策略")
+            
+            # 3. 制定执行计划
+            execution_plan = self._create_execution_plan(task_analysis)
+            self.info(f"执行计划: {execution_plan}")
+            
+            # 4. 评估资源需求
+            resource_plan = self._estimate_resources(task_analysis, chunk_strategies)
+            self.info(f"资源评估: {resource_plan}")
+            
+            # 5. 确定工作流配置
+            workflow_config = self._configure_workflow(execution_plan, resource_plan)
+            self.info(f"工作流配置: {workflow_config}")
+            
+            # 6. 构建Task Memory（任务元数据）
+            task_memory = {
+                "chunk_strategies": chunk_strategies,  # 每个chunk的翻译策略
+                "terminology_database": {},  # 将由TerminologyAgent填充
+                "style_guide": self._determine_style_guide(cache_project),  # 文体风格指南
+                "entity_database": {},  # 实体数据库（用于一致性检查）
+            }
+            
+            self.log_agent_action("任务规划完成", 
+                                 f"预计处理 {task_analysis['total_units']} 个单元，"
+                                 f"已为 {len(chunk_strategies)} 个批次分配翻译策略")
+            
+            return {
+                "success": True,
+                "cache_project": cache_project,
+                "task_analysis": task_analysis,
+                "execution_plan": execution_plan,
+                "resource_plan": resource_plan,
+                "workflow_config": workflow_config,
+                "task_memory": task_memory,  # 新增：任务元数据
+            }
+        except Exception as e:
+            self.error(f"任务规划执行失败: {e}", e)
+            return {"success": False, "error": str(e)}
     
     def _analyze_task_complexity(self, cache_project: CacheProject) -> Dict[str, Any]:
         """

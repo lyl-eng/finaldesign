@@ -53,29 +53,64 @@ class PreprocessingAgent(BaseAgent):
         Returns:
             包含处理后的cache_project和元数据的字典
         """
-        self.log_agent_action("开始执行译前预处理")
-        
-        cache_project: CacheProject = input_data.get("cache_project")
-        if not cache_project:
-            self.error("未找到cache_project数据")
-            return {"success": False, "error": "缺少cache_project"}
-        
-        # 1. 文本结构拆解（如果尚未拆解）
-        self._structure_text(cache_project)
-        
-        # 2. 语域与风格识别
-        metadata = self._identify_domain_and_style(cache_project)
-        
-        # 保存元数据到项目
-        cache_project.extra["preprocessing_metadata"] = metadata
-        
-        self.log_agent_action("译前预处理完成", f"识别领域: {metadata.get('domain')}, 风格: {metadata.get('style')}")
-        
-        return {
-            "success": True,
-            "cache_project": cache_project,
-            "metadata": metadata
-        }
+        try:
+            self.log_agent_action("开始执行译前预处理")
+            
+            cache_project: CacheProject = input_data.get("cache_project")
+            if not cache_project:
+                self.error("未找到cache_project数据")
+                return {"success": False, "error": "缺少cache_project"}
+            
+            # 1. 文本结构拆解（如果尚未拆解）
+            self._structure_text(cache_project)
+            
+            # 2. 语域与风格识别
+            metadata = self._identify_domain_and_style(cache_project)
+            
+            # 保存元数据到项目
+            cache_project.extra["preprocessing_metadata"] = metadata
+            
+            # ==========================================
+            # DB: 写入 topic_info 到数据库
+            # ==========================================
+            self._save_topic_info_to_db(cache_project, metadata)
+            
+            self.log_agent_action("译前预处理完成", f"识别领域: {metadata.get('domain')}, 风格: {metadata.get('style')}")
+            
+            return {
+                "success": True,
+                "cache_project": cache_project,
+                "metadata": metadata
+            }
+        except Exception as e:
+            self.error(f"译前预处理执行失败: {e}", e)
+            return {"success": False, "error": str(e)}
+
+    def _save_topic_info_to_db(self, cache_project: CacheProject, metadata: Dict[str, Any]):
+        """将 topic_info 保存到数据库"""
+        try:
+            if not hasattr(cache_project, 'db_work_id') or not cache_project.db_work_id:
+                self.debug("[DB] 无 work_id，跳过 topic_info 写入")
+                return
+            
+            from ModuleFolders.Cache.DatabaseManager import DatabaseManager
+            db_manager = DatabaseManager()
+            
+            # 构建 topic_info
+            topic_info = {
+                "domain": metadata.get("domain", "general"),
+                "style": metadata.get("style", "neutral"),
+                "domain_scores": metadata.get("domain_scores", {}),
+                "style_scores": metadata.get("style_scores", {}),
+                "total_text_length": metadata.get("total_text_length", 0)
+            }
+            
+            # 更新到数据库
+            db_manager.update_project_topic_info(cache_project.db_work_id, topic_info)
+            self.info(f"[DB] topic_info 已保存: domain={topic_info['domain']}, style={topic_info['style']}")
+            
+        except Exception as e:
+            self.error(f"[DB] topic_info 保存失败: {e}")
     
     def _structure_text(self, cache_project: CacheProject) -> None:
         """
